@@ -135,9 +135,14 @@
             margin-top: 20px;
         }
 
-        .submit-btn:hover {
+        .submit-btn:hover:not(:disabled) {
             transform: translateY(-2px);
             box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
         }
 
         .qr-result {
@@ -164,9 +169,10 @@
             margin-top: 20px;
         }
 
-        .qr-code canvas {
+        .qr-code img {
             border: 2px solid #ddd;
             border-radius: 10px;
+            max-width: 300px;
         }
 
         .unique-link {
@@ -222,9 +228,29 @@
             border: 1px solid #c3e6cb;
         }
 
+        .alert.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
         .alert.show {
             display: block;
             animation: fadeIn 0.5s ease-in;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
 
         @media (max-width: 768px) {
@@ -287,8 +313,10 @@
                     </div>
                 </div>
                 
-                <button type="submit" class="submit-btn">Generate QR Code & Unique Link</button>
+                <button type="submit" class="submit-btn" id="submit-btn">Generate QR Code & Unique Link</button>
             </form>
+
+            <div id="alert-box" class="alert"></div>
 
             <div id="qr-result" class="qr-result">
                 <h3>Generated QR Code & Link</h3>
@@ -364,31 +392,24 @@
     </div>
 
     <script>
-        // In-memory database simulation
-        let components = JSON.parse(sessionStorage.getItem('components')) || [];
-        let componentReports = JSON.parse(sessionStorage.getItem('componentReports')) || [];
+        // Configuration - UPDATE THIS WITH YOUR FLASK SERVER URL
+        const API_BASE_URL = 'http://localhost:5000'; // Change port if needed
 
-        // Generate unique ID
+        // In-memory database simulation (fallback if backend is unavailable)
+        let components = [];
+        let componentReports = [];
+
+        // Generate unique ID (client-side fallback)
         function generateUniqueId() {
             return 'COMP-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
         }
 
-        // Generate unique link
-        function generateUniqueLink(id) {
-            return `https://component-tracker.gov.in/track/${id}`;
-        }
-
-        // Simple QR code generation (placeholder - in real app, use QR library)
-        function generateQRCode(text, containerId) {
-            const container = document.getElementById(containerId);
-            container.innerHTML = `
-                <div style="width: 200px; height: 200px; background: #f0f0f0; display: flex; align-items: center; justify-content: center; border: 2px solid #ddd; border-radius: 10px; margin: 0 auto;">
-                    <div style="text-align: center;">
-                        <div style="font-size: 12px; margin-bottom: 10px;">QR Code</div>
-                        <div style="font-size: 10px; word-wrap: break-word; padding: 5px;">${text.substring(0, 50)}...</div>
-                    </div>
-                </div>
-            `;
+        // Show alert message
+        function showAlert(message, type = 'success') {
+            const alertBox = document.getElementById('alert-box');
+            alertBox.textContent = message;
+            alertBox.className = `alert ${type} show`;
+            setTimeout(() => alertBox.classList.remove('show'), 5000);
         }
 
         // Switch between dashboards
@@ -406,38 +427,73 @@
             document.getElementById(dashboard + '-dashboard').classList.add('active');
         }
 
-        // Government form submission
-        document.getElementById('govt-form').addEventListener('submit', function(e) {
+        // Government form submission with AJAX
+        document.getElementById('govt-form').addEventListener('submit', async function(e) {
             e.preventDefault();
             
+            const submitBtn = document.getElementById('submit-btn');
+            const originalText = submitBtn.textContent;
+            
+            // Disable button and show loading
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<span class="loading"></span> Generating...';
+            
             const formData = new FormData(this);
-            const componentId = generateUniqueId();
-            const uniqueLink = generateUniqueLink(componentId);
             
-            const component = {
-                id: componentId,
-                vendorName: formData.get('vendorName'),
-                vendorArea: formData.get('vendorArea'),
-                componentName: formData.get('componentName'),
-                quantity: parseInt(formData.get('componentQuantity')),
-                remainingQuantity: parseInt(formData.get('componentQuantity')),
-                status: 'Active',
-                createdAt: new Date().toLocaleString()
-            };
-            
-            components.push(component);
-            sessionStorage.setItem('components', JSON.stringify(components));
-            
-            // Show QR result
-            document.getElementById('unique-link').textContent = uniqueLink;
-            generateQRCode(uniqueLink, 'qr-code');
-            document.getElementById('qr-result').classList.add('show');
-            
-            // Update table
-            updateGovtTable();
-            
-            // Reset form
-            this.reset();
+            try {
+                // Send POST request to Flask backend
+                const response = await fetch(`${API_BASE_URL}/generate`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // Display the QR code and unique link
+                document.getElementById('unique-link').textContent = data.unique_id || data.data;
+                
+                if (data.qr_image) {
+                    document.getElementById('qr-code').innerHTML = `
+                        <img src="${data.qr_image}" alt="QR Code" />
+                        <p style="margin-top: 10px; color: #666;">Scan this QR code to track the component</p>
+                    `;
+                }
+                
+                document.getElementById('qr-result').classList.add('show');
+                
+                // Add to local storage for table display
+                const component = {
+                    id: data.unique_id || data.data || generateUniqueId(),
+                    vendorName: formData.get('vendorName'),
+                    vendorArea: formData.get('vendorArea'),
+                    componentName: formData.get('componentName'),
+                    quantity: parseInt(formData.get('componentQuantity')),
+                    remainingQuantity: parseInt(formData.get('componentQuantity')),
+                    status: 'Active',
+                    createdAt: new Date().toLocaleString()
+                };
+                
+                components.push(component);
+                updateGovtTable();
+                
+                // Show success message
+                showAlert('QR Code generated successfully!', 'success');
+                
+                // Reset form
+                this.reset();
+                
+            } catch (error) {
+                console.error('Error:', error);
+                showAlert(`Error: ${error.message}. Make sure your Flask server is running on ${API_BASE_URL}`, 'error');
+            } finally {
+                // Re-enable button
+                submitBtn.disabled = false;
+                submitBtn.textContent = originalText;
+            }
         });
 
         // Supervisor form submission
@@ -468,8 +524,6 @@
             };
             
             componentReports.push(report);
-            sessionStorage.setItem('components', JSON.stringify(components));
-            sessionStorage.setItem('componentReports', JSON.stringify(componentReports));
             
             // Show success message
             const alert = document.getElementById('supervisor-alert');
@@ -487,6 +541,10 @@
         // Update government table
         function updateGovtTable() {
             const tbody = document.getElementById('govt-table-body');
+            if (components.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #999;">No components registered yet</td></tr>';
+                return;
+            }
             tbody.innerHTML = components.map(component => `
                 <tr>
                     <td>${component.id}</td>
@@ -495,7 +553,7 @@
                     <td>${component.remainingQuantity}/${component.quantity}</td>
                     <td>${component.vendorArea}</td>
                     <td>
-                        <span style="color: ${component.status === 'Active' ? '#4CAF50' : '#f44336'}">${component.status}</span>
+                        <span style="color: ${component.status === 'Active' ? '#4CAF50' : '#f44336'}; font-weight: bold;">${component.status}</span>
                     </td>
                 </tr>
             `).join('');
@@ -504,6 +562,10 @@
         // Update supervisor table
         function updateSupervisorTable() {
             const tbody = document.getElementById('supervisor-table-body');
+            if (componentReports.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #999;">No reports submitted yet</td></tr>';
+                return;
+            }
             tbody.innerHTML = componentReports.map(report => `
                 <tr>
                     <td>${report.componentId}</td>
